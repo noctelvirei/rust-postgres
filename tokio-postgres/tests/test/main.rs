@@ -22,6 +22,7 @@ mod binary_copy;
 mod parse;
 #[cfg(feature = "runtime")]
 mod runtime;
+mod simple_query_metadata;
 mod types;
 
 pin_project! {
@@ -348,6 +349,11 @@ async fn simple_query() {
         )
         .await
         .unwrap();
+
+    let messages: Vec<_> = messages
+        .into_iter()
+        .filter(|message| !matches!(message, SimpleQueryMessage::CommandTag(_)))
+        .collect();
 
     match messages[0] {
         SimpleQueryMessage::CommandComplete(0) => {}
