@@ -210,18 +210,24 @@ where
         // is the obsolete protocol-v2 method that no modern server sends, and
         // ScmCredential (tag 6) is unix-socket peer credentials — both keep the
         // original refusal below.
-        Some(Message::AuthenticationGss) | Some(Message::AuthenticationSspi) => {
+        Some(message @ (Message::AuthenticationGss | Message::AuthenticationSspi)) => {
             #[cfg(feature = "gss")]
             {
+                let mechanism = if matches!(message, Message::AuthenticationSspi) {
+                    gss::Mechanism::Sspi
+                } else {
+                    gss::Mechanism::Gss
+                };
                 // Returns true only if the server's AuthenticationOk was already
                 // consumed inside the exchange, in which case there is nothing
                 // left for the tail of this function to read.
-                if gss::authenticate_gss(stream, config, hostname).await? {
+                if gss::authenticate_gss(stream, config, hostname, mechanism).await? {
                     return Ok(());
                 }
             }
             #[cfg(not(feature = "gss"))]
             {
+                let _ = message;
                 // Without the feature this crate behaves exactly like upstream.
                 return Err(Error::authentication(
                     "unsupported authentication method".into(),

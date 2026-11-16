@@ -1,21 +1,23 @@
-//! Windows SSPI implementation of the Kerberos client context.
+//! Windows SSPI implementation of the GSS/SSPI client context.
 //!
 //! Uses the OS security provider directly through `windows-sys` — no
 //! third-party Kerberos, TLS or crypto crate is involved. The call sequence is
 //! the standard one:
 //!
 //! ```text
-//! AcquireCredentialsHandleW("Kerberos", SECPKG_CRED_OUTBOUND, [identity])
+//! AcquireCredentialsHandleW(package, SECPKG_CRED_OUTBOUND, [identity])
 //! InitializeSecurityContextW(target = "service/host")   -> token, CONTINUE_NEEDED
 //! InitializeSecurityContextW(server token)              -> token, OK
 //! ```
 //!
-//! The package is **"Kerberos", never "Negotiate"**. Negotiate would silently
-//! fall back to NTLM, which a Postgres server asking for GSS will reject anyway
-//! — but only after the client reported a successful handshake, turning a clear
-//! configuration error into a confusing one.
+//! Like [libpq's `pg_SSPI_startup`], select "Kerberos" for `AuthenticationGSS`
+//! and "Negotiate" for `AuthenticationSSPI`. GSS must not fall back to NTLM:
+//! a server asking for GSS would reject it only after the client reported a
+//! successful handshake. SSPI allows negotiation of Kerberos or NTLM.
+//!
+//! [libpq's `pg_SSPI_startup`]: https://github.com/postgres/postgres/blob/master/src/interfaces/libpq/fe-auth.c
 
-use super::{GssClientContext, GssError, GssFailure, GssParams, GssStep};
+use super::{GssClientContext, GssError, GssFailure, GssParams, GssStep, Mechanism};
 use std::ffi::c_void;
 use std::ptr;
 use windows_sys::Win32::Security::Authentication::Identity::{
@@ -55,6 +57,14 @@ const MAX_TOKEN: usize = 48 * 1024;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// The SSPI package for the server's authentication request.
+fn package_name(mechanism: &Mechanism) -> &'static str {
+    match mechanism {
+        Mechanism::Gss => "Kerberos",
+        Mechanism::Sspi => "Negotiate",
+    }
 }
 
 /// Map an SSPI status onto one of the failure classes users can act on.
@@ -116,7 +126,7 @@ fn empty_handle() -> SecHandle {
 
 impl GssClientContext for ClientContext {
     fn new(params: &GssParams<'_>) -> Result<Self, GssError> {
-        let package = wide("Kerberos");
+        let package = wide(package_name(&params.mechanism));
         let mut cred = empty_handle();
         let mut expiry = 0i64;
 
@@ -152,10 +162,12 @@ impl GssClientContext for ClientContext {
                     }),
                 )
             }
-            // Ambient: the logon session's own Kerberos credentials.
+            // Ambient: the logon session's own credentials.
             None => (None, None),
         };
 
+        // SAFETY: package is NUL-terminated; identity and its backing strings
+        // stay alive for the call, and cred and expiry are valid output pointers.
         let status = unsafe {
             AcquireCredentialsHandleW(
                 ptr::null(),
@@ -252,7 +264,7 @@ impl GssClientContext for ClientContext {
                 Ok(GssStep {
                     token: out_token,
                     // COMPLETE_NEEDED/AND_CONTINUE relate to CompleteAuthToken,
-                    // which the Kerberos package does not require; only
+                    // which Kerberos and NTLM do not require; only
                     // CONTINUE_NEEDED means another server token is coming.
                     complete: status != SEC_I_CONTINUE_NEEDED
                         && status != SEC_I_COMPLETE_AND_CONTINUE,
@@ -266,6 +278,12 @@ impl GssClientContext for ClientContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_matches_the_server_authentication_request() {
+        assert_eq!(package_name(&Mechanism::Gss), "Kerberos");
+        assert_eq!(package_name(&Mechanism::Sspi), "Negotiate");
+    }
 
     #[test]
     fn classify_covers_the_four_actionable_modes() {

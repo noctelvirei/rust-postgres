@@ -141,6 +141,7 @@ mod tests {
 
     fn params<'a>(service: &'a str, host: &'a str) -> GssParams<'a> {
         GssParams {
+            mechanism: super::super::Mechanism::Gss,
             service,
             host,
             principal: None,

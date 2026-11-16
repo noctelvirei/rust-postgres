@@ -78,8 +78,17 @@ pub(crate) struct GssStep {
     pub complete: bool,
 }
 
+/// The authentication method requested by the server.
+pub(crate) enum Mechanism {
+    Gss,
+    Sspi,
+}
+
 /// Everything a platform needs to build a client context.
 pub(crate) struct GssParams<'a> {
+    /// The server's request; Windows selects the SSPI package from it.
+    #[cfg_attr(unix, allow(dead_code))]
+    pub mechanism: Mechanism,
     /// `krbsrvname` — the service half of the SPN. Defaults to `postgres`.
     pub service: &'a str,
     /// The host half of the SPN, exactly as the user spelled it.
@@ -123,6 +132,7 @@ pub(crate) async fn authenticate_gss<S, T>(
     stream: &mut StartupStream<S, T>,
     config: &Config,
     hostname: Option<&str>,
+    mechanism: Mechanism,
 ) -> Result<bool, Error>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -139,6 +149,7 @@ where
     };
 
     let params = GssParams {
+        mechanism,
         service: config.krbsrvname.as_deref().unwrap_or("postgres"),
         host,
         principal: config.gss_principal.as_deref(),
